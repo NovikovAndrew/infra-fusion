@@ -26,3 +26,6 @@ _cmd/
 .envrc
 **/.direnv/**
 /postgres_data/
+
+# Internal project files
+config/*

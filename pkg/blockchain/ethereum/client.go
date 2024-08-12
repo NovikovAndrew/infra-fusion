@@ -14,7 +14,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/log"
 )
 
 type EthClientConfig struct {
@@ -24,7 +23,6 @@ type EthClientConfig struct {
 }
 
 type BlockchainClient struct {
-	ctx                 context.Context
 	logger              *slog.Logger
 	client              *ethclient.Client
 	lock                *sync.Mutex
@@ -36,9 +34,8 @@ type BlockchainClient struct {
 	sub                 ethereum.Subscription
 }
 
-func NewBlockchainClient(ctx context.Context, logger *slog.Logger, cfg EthClientConfig) *BlockchainClient {
+func NewBlockchainClient(logger *slog.Logger, cfg EthClientConfig) *BlockchainClient {
 	return &BlockchainClient{
-		ctx:     ctx,
 		logger:  logger.With(commonType.BlockchainAttr, "ethereum"),
 		lock:    &sync.Mutex{},
 		apiURL:  cfg.ApiURL,
@@ -82,48 +79,56 @@ func (bc *BlockchainClient) IsConnected() bool {
 	return bc.isConnected
 }
 
-func (bc *BlockchainClient) SubscribeFilterLogs(addresses []common.Address, topics [][]common.Hash, outCh chan types.Log) (ethereum.Subscription, error) {
+func (bc *BlockchainClient) SubscribeFilterLogs(ctx context.Context, addresses []common.Address, topics [][]common.Hash, outCh chan types.Log) (ethereum.Subscription, error) {
 	q := ethereum.FilterQuery{
 		Addresses: addresses,
 		Topics:    topics,
 	}
-	return bc.client.SubscribeFilterLogs(bc.ctx, q, outCh)
+	return bc.client.SubscribeFilterLogs(ctx, q, outCh)
 }
 
-func (bc *BlockchainClient) SubscribeNewHead(headerCh chan *types.Header) (ethereum.Subscription, error) {
-	return bc.client.SubscribeNewHead(bc.ctx, headerCh)
+func (bc *BlockchainClient) SubscribeNewHead(ctx context.Context, headerCh chan *types.Header) (ethereum.Subscription, error) {
+	return bc.client.SubscribeNewHead(ctx, headerCh)
 }
 
-func (bc *BlockchainClient) ContractsLog(addresses []common.Address) ([]types.Log, error) {
+func (bc *BlockchainClient) ContractsLog(ctx context.Context, addresses []common.Address) ([]types.Log, error) {
 	q := ethereum.FilterQuery{
 		Addresses: addresses,
 	}
-	return bc.client.FilterLogs(bc.ctx, q)
+	return bc.client.FilterLogs(ctx, q)
 }
 
-func (bc *BlockchainClient) BlockNumber() (uint64, error) {
-	return bc.client.BlockNumber(bc.ctx)
+func (bc *BlockchainClient) BlockNumber(ctx context.Context) (uint64, error) {
+	return bc.client.BlockNumber(ctx)
 }
 
-func (bc *BlockchainClient) BlockByNumber(number *big.Int) (*types.Block, error) {
-	return bc.client.BlockByNumber(bc.ctx, number)
+func (bc *BlockchainClient) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+	return bc.client.BlockByNumber(ctx, number)
 }
 
-func (bc *BlockchainClient) SubscribeHead(headerCh chan *types.Header) (ethereum.Subscription, error) {
-	return bc.client.SubscribeNewHead(bc.ctx, headerCh)
+func (bc *BlockchainClient) SubscribeHead(ctx context.Context, headerCh chan *types.Header) (ethereum.Subscription, error) {
+	return bc.client.SubscribeNewHead(ctx, headerCh)
 }
 
-func (bc *BlockchainClient) Subscribe() (chan *types.Block, error) {
+func (bc *BlockchainClient) Subscribe(ctx context.Context) (chan *types.Block, error) {
 	switch bc.cfg.ConnectionType {
 	case commonType.WSSubscriptionType:
-		err := bc.runWS()
+		err := bc.runWS(ctx)
 		return bc.blockCh, err
 	case commonType.HTTP:
-		bc.runHttp()
+		bc.runHttp(ctx)
 		return bc.blockCh, nil
 	}
 
 	return nil, ErrorWrongSubType
+}
+
+func (bc *BlockchainClient) GetTxByHash(ctx context.Context, txHash string) (*types.Transaction, bool, error) {
+	return bc.client.TransactionByHash(ctx, common.HexToHash(txHash))
+}
+
+func (bc *BlockchainClient) GetBlockByHeight(ctx context.Context, blockHeight uint64) (*types.Block, error) {
+	return bc.client.BlockByNumber(ctx, big.NewInt(int64(blockHeight)))
 }
 
 func (bc *BlockchainClient) Unsubscribe() {
@@ -135,15 +140,15 @@ func (bc *BlockchainClient) Unsubscribe() {
 	close(bc.blockCh)
 }
 
-func (bc *BlockchainClient) runHttp() {
+func (bc *BlockchainClient) runHttp(ctx context.Context) {
 	ticker := time.NewTicker(bc.cfg.TickerTime)
 	go func() {
 		for {
 			select {
 			case _ = <-ticker.C:
-				blockNumber, err := bc.BlockNumber()
+				blockNumber, err := bc.BlockNumber(ctx)
 				if err != nil {
-					log.Error("runHttp: failed to get block number, err - [%s]", err.Error())
+					bc.logger.Error("runHttp: failed to get block number", slog.StringValue(err.Error()))
 					continue
 				}
 
@@ -152,14 +157,14 @@ func (bc *BlockchainClient) runHttp() {
 				}
 				atomic.StoreUint64(&bc.previousBlockNumber, blockNumber)
 
-				block, err := bc.BlockByNumber(big.NewInt(int64(blockNumber)))
+				block, err := bc.BlockByNumber(ctx, big.NewInt(int64(blockNumber)))
 				if err != nil {
-					log.Error("runHttp: failed to get block, err - [%s]", err.Error())
+					bc.logger.Error("runHttp: failed to get block by number", slog.StringValue(err.Error()))
 					continue
 				}
 
 				bc.blockCh <- block
-			case _ = <-bc.ctx.Done():
+			case <-ctx.Done():
 				ticker.Stop()
 				bc.client.Close()
 				close(bc.blockCh)
@@ -169,9 +174,9 @@ func (bc *BlockchainClient) runHttp() {
 	}()
 }
 
-func (bc *BlockchainClient) runWS() error {
+func (bc *BlockchainClient) runWS(ctx context.Context) error {
 	headerCh := make(chan *types.Header)
-	sub, err := bc.SubscribeHead(headerCh)
+	sub, err := bc.SubscribeHead(ctx, headerCh)
 	if err != nil {
 		return err
 	}
@@ -185,14 +190,14 @@ func (bc *BlockchainClient) runWS() error {
 				close(bc.blockCh)
 				return
 			case header := <-headerCh:
-				block, err := bc.BlockByNumber(header.Number)
+				block, err := bc.BlockByNumber(ctx, header.Number)
 				if err != nil {
-					log.Error("runWS: failed to get block, err - [%s]", err.Error())
+					bc.logger.Error("runHttp: failed to get block by number", slog.StringValue(err.Error()))
 					continue
 				}
 
 				bc.blockCh <- block
-			case _ = <-bc.ctx.Done():
+			case <-ctx.Done():
 				sub.Unsubscribe()
 				bc.client.Close()
 				close(bc.blockCh)
@@ -203,12 +208,4 @@ func (bc *BlockchainClient) runWS() error {
 
 	bc.sub = sub
 	return nil
-}
-
-func (bc *BlockchainClient) GetTxByHash(ctx context.Context, txHash string) (*types.Transaction, bool, error) {
-	return bc.client.TransactionByHash(ctx, common.HexToHash(txHash))
-}
-
-func (bc *BlockchainClient) GetBlockByHeight(ctx context.Context, blockHeight uint64) (*types.Block, error) {
-	return bc.client.BlockByNumber(ctx, big.NewInt(int64(blockHeight)))
 }

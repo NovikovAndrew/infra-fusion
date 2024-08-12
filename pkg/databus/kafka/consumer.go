@@ -26,7 +26,7 @@ func (d *Databus) Consume(ctx context.Context, consumerGroupId string, topic str
 		}
 	}()
 
-	return nil
+	return cg.Consume(ctx, []string{topic}, &saramaConsumeHandler{messageHandler: handler})
 }
 
 type saramaConsumeHandler struct {
@@ -74,5 +74,4 @@ func (h *saramaConsumeHandler) ConsumeClaim(session sarama.ConsumerGroupSession,
 			return nil
 		}
 	}
-
 }
