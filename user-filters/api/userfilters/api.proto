@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/NovikovAndrew/infra-fusion/user-filter/pb";
+
+import "rpc_get_filter.proto";
+import "save_filter_request.proto";
+import "get_filters_by_user_id.proto";
+
+service UserFilters {
+  rpc GetFilter(GetFilterRequest) returns (GetFilterResponse);
+  rpc SaveFilter(SaveFilterRequest) returns (SaveFilterResponse);
+  rpc GetFiltersByUserID(GetFiltersByUserIDRequest) returns (GetFiltersByUserIDResponse);
+}

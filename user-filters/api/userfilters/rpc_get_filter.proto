@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package proto;
+
+option go_package = "github.com/NovikovAndrew/infra-fusion/user-filter/pb";
+
+import "rpc_filter.proto";
+
+message GetFilterRequest {
+	uint64 filterID = 1;
+}
+
+message GetFilterResponse {
+   Filter filter = 1;
+}
